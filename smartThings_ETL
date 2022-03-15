@@ -6,7 +6,11 @@ import pandas as pd
 import time
 import datetime as dt
 import asyncio
-
+# Libraries needed to compute thermal comfort using PMV method
+from pythermalcomfort.models import pmv
+from pythermalcomfort.utilities import v_relative, clo_dynamic
+from pythermalcomfort.utilities import met_typical_tasks
+from pythermalcomfort.utilities import clo_individual_garments
 # define your token
 token='YOUR TOKEN HERE'
 
@@ -27,12 +31,53 @@ async def extract(device_num):
             status_2=dict(status) #convert to a dictionary
     return status_2,cap
 
+#MRT=Air Temperature
+#Dry Bulb Temperature=Air Temperature
+#assume .5 clo - light clothing
+#assume met=1.2 for sedentary
+#assume .1 m/s air speed
+async def comfort(temp,humid):
+    """
+    Takes a Temperature in F and Realative Humidity as an input
+    Returns PMV comfort value.
+    
+    Thermal  sensation scale.
+    Score    Thermal Sensation
+    +3           Hot
+    +2           Warm
+    +1           Slightly warm
+    0            Neutral
+    1            Slightly cool
+    2            Cool
+    3            Cold
+    """
+    tbd=temp
+    tr=temp
+    rh=humid
+    v=.1
+    met=1.2
+    clo=.5
+    units="IP" #imperial units or SI for Internation System of Units
+    #Nothe the below functions are synchronous
+    # calculate relative air speed
+    v_r = v_relative(v=v, met=met)
+    # calculate dynamic clothing
+    clo_d = clo_dynamic(clo=clo, met=met)
+    results=pmv(tdb=tbd, tr=tr, vr=v_r, rh=rh, met=met, clo=clo_d, units=units)
+    return results
+
 # Convert collected data to a pandas frame
 async def collect(device_num):
+    """
+    Takes a smartThings device number as input
+    Extracts values and capabilities from the device and
+    returns the values as a Pandas Dataframe
+    """
     return_frame1={}
     return_frame=pd.DataFrame(return_frame1)
     time_stamp={}
     time_frame=pd.DataFrame(time_stamp)
+    Cl=0
     async with aiohttp.ClientSession() as session:
             api = pysmartthings.SmartThings(session, token)
             devices = await api.devices()
@@ -45,7 +90,7 @@ async def collect(device_num):
             if device_num==3: #Samsung Refridgerator
                 new_dict={'powerConsumption':status_2['powerConsumption']}
                 new_dict2=new_dict['powerConsumption']
-                time_stamp={'Time':t1}            
+                time_stamp={'Time':t1}  
                 new_row=pd.DataFrame(new_dict2,index=[0])
                 new_time=pd.DataFrame(time_stamp, index=[0])
 
@@ -56,16 +101,29 @@ async def collect(device_num):
                 new_dict={'humidity': status_2['humidity'], 'temperature': status_2['temperature']}
                 new_row=pd.DataFrame(new_dict,index=[0])
                 time_stamp={'Time':t1}  
+                humid=new_row.iloc[0]['humidity']
+                temp=new_row.iloc[0]['temperature']
+                Cl= await comfort(temp=temp,humid=humid)
+                comfort_level={'PMV':Cl}
                 new_time=pd.DataFrame(time_stamp, index=[0])
-               
+                
+                comfort_frame=pd.DataFrame(comfort_level, index=[0])
                 return_frame=pd.DataFrame(new_dict,index=[0])
                 time_frame=pd.DataFrame(time_stamp, index=[0])
+                comfort_column=comfort_frame['PMV']
+                return_frame=return_frame.join(comfort_column) #add the PMV column
                 
     time_column=time_frame['Time']
-    return_frame=return_frame.join(time_column)
+    return_frame=return_frame.join(time_column) #Add the timestamp column
     return return_frame
 
 async def record_data(device_num, timer=5, period=5):
+    """
+    Takes a smartThings device number, a time period between measurments, 
+    and the number of measurements
+    Extracts values from the device and
+    returns the values as an aggregated Pandas Dataframe
+    """
     return_frame1={}
     return_frame=pd.DataFrame(return_frame1)
     for i in range(period):
@@ -75,7 +133,6 @@ async def record_data(device_num, timer=5, period=5):
         if timer>0:
             return_frame=df=pd.concat([return_frame, new_row], ignore_index = True, axis = 0)
         await asyncio.sleep(timer)
-        print("Period {} has been collected".format(i))
     return return_frame
 
 
